@@ -7,8 +7,7 @@
 # PBS 资源配置
 #PBS -q new
 #PBS -l nodes=1:ppn=25
-#PBS -N gwas_analysis
-#PBS -j oe
+#PBS -N gwas_glm
 
 # ==========================================
 # 1. 环境与路径配置
