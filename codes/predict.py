@@ -1,86 +1,107 @@
-import math
-import joblib
 import pandas as pd
 import numpy as np
-from scipy.stats import spearmanr,pearsonr
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import Ridge
-from sklearn.model_selection import KFold, GridSearchCV
-from skimage.metrics import mean_squared_error
+from pathlib import Path
+from scipy.stats import pearsonr
 from sklearn.cross_decomposition import PLSRegression
-from sklearn.metrics import mean_absolute_error
-from matplotlib import pyplot as plt
-from scipy import stats
-from sklearn.neighbors import KNeighborsRegressor
-from sklearn.svm import SVR
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.metrics import make_scorer
+from sklearn.model_selection import KFold, GridSearchCV
 
+# ==========================================
+# 1. 路径配置
+# ==========================================
+PROJECT_ROOT = Path(__file__).resolve().parents[1] # 假设脚本在 /scripts 文件夹
+INPUT_DIR = PROJECT_ROOT / "predict" / "final"
+OUTPUT_DIR = PROJECT_ROOT / "predict" / "final" / "kf3"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+COGS = ['fluid']
 
-cogs = ['fluid']
-mean_std = pd.DataFrame(index=cogs,columns=['mean0', 'std0', 'mean1','std1', 'mean2', 'std2'])
-for cog in cogs:
-    data = pd.read_csv("/Users/sheeya/Documents/project/gwas_wm/predict/final/"+cog+"_nodal_eff_prs_best.csv")
-    # # ne列
-    data = data.iloc[:,list(range(0, 248)) + list(range(494, 740))]
-    # # nle列
-    # data = data.iloc[:, list(range(0, 2)) + list(range(248, 494))+ list(range(740, 986))]
-    zs = lambda v: (v-v.mean(0))/v.std(0)
-    for colname,column in data.items():
+# ==========================================
+# 2. plsr交叉验证函数
+# ==========================================
 
-        if colname != "eid":
-            data[colname] = zs(column)
+def run_plsr_prediction(X, y, n_splits=3, seeds=range(1, 101)):
+    """
+    执行带 GridSearch 的 PLSR 预测并计算平均相关系数
+    """
+    all_seeds_ave_corr = []
+    
+    for seed in seeds:
+        # 使用随机种子进行样本置换以保证鲁棒性
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+        fold_corrs = []
+        
+        for train_index, test_index in kf.split(X):
+            X_train, X_test = X[train_index], X[test_index]
+            y_train, y_test = y[train_index], y[test_index]
+            
+            # PLSR 回归与超参数搜索 (n_components)
+            model = PLSRegression(scale=True)
+            param_grid = {'n_components': range(2, 10)}
+            gsearch = GridSearchCV(model, param_grid, cv=n_splits)
+            gsearch.fit(X_train, y_train)
+            
+            # 预测与相关性评估
+            y_pred = gsearch.predict(X_test).flatten()
+            corr, _ = pearsonr(y_pred, y_test)
+            fold_corrs.append(corr)
+            
+        all_seeds_ave_corr.append(np.mean(fold_corrs))
+        
+    return np.array(all_seeds_ave_corr)
 
-    # index = [[2, 494], [494, 986], [2, 986]]
-    index = [[2, 248], [248, 494], [2, 494]]
-    ttest_list = pd.DataFrame(data=None,columns=['eff', 'prs', 'eff_prs'])
-    for i in range(3):
-        ave_list = []
-        for seed in range(1,101):
-            corr_list = []
-            X = data.iloc[:, index[i][0]:index[i][1]]
-            y = data.loc[:, cog]
-            print(X)
-            X = np.array(X)
-            y = np.array(y)
-            np.random.seed(seed)
-            np.random.shuffle(X)
-            print(seed)
-            print(X)
-            np.random.seed(seed)
-            np.random.shuffle(y)
-            print(y)
-            kf = KFold(n_splits=3,shuffle=False)
-            for train_index, test_index in kf.split(X):
-                # print("TRAIN:", len(train_index), "TEST:", len(test_index))
-                X_train, X_test = X[train_index], X[test_index]
-                y_train, y_test = y[train_index], y[test_index]
-                #plsr
-                model = PLSRegression(scale=True)
-                param_grid = {'n_components': range(2,10)}
-                gsearch = GridSearchCV(model, param_grid, cv = kf)
-                gsearch.fit(X_train, y_train)
-                y_pred = gsearch.predict(X_test)
-                y_pred = y_pred.flatten()
-                y_pred = np.array(y_pred)
-                y_test = np.array(y_test)
-                corr = pearsonr(y_pred,y_test).statistic
-                print(corr)
-                corr_list.append(corr)
-            corr_list = np.array(corr_list)
-            ave = corr_list.mean()
-            ave_list.append(ave)
-        ave_list = np.array(ave_list)
-        mean = ave_list.mean()
-        std = ave_list.std()
-        mean_col_name = 'mean' + str(i)
-        std_col_name = 'std' + str(i)
-        mean_std.loc[cog,mean_col_name] = mean
-        mean_std.loc[cog, std_col_name] = std
-        ave_list = pd.DataFrame(ave_list)
-        ttest_list[ttest_list.columns[i]] = ave_list
-    print(ttest_list)
-    ttest_list.to_csv("/Users/sheeya/Documents/project/gwas_wm/predict/final/kf3/plsr_predict_"+cog+"_with_ne_ttest.csv",index=None)
-print(mean_std)
-mean_std.to_csv("/Users/sheeya/Documents/project/gwas_wm/predict/final/kf3/plsr_mean_std_with_ne.csv")
+# ==========================================
+# 3. 主程序流程
+# ==========================================
+
+def main():
+    summary_results = pd.DataFrame(
+        index=COGS, 
+        columns=['mean0', 'std0', 'mean1', 'std1', 'mean2', 'std2']
+    )
+
+    for cog in COGS:
+        # A. 加载数据
+        file_path = INPUT_DIR / f"{cog}_nodal_eff_prs_best.csv"
+        df = pd.read_csv(file_path)
+        
+        # B. 数据预处理: Z-score 标准化 (排除非特征列)
+        feature_cols = [col for col in df.columns if col not in ['eid', cog]]
+        df[feature_cols] = df[feature_cols].apply(lambda x: (x - x.mean()) / x.std())
+        
+        # C. 定义特征子集
+        # 请根据实际列名修改以下逻辑以增强鲁棒性
+        subsets = [
+            df.iloc[:, 2:248],    # Subset 0: e.g., Eff only
+            df.iloc[:, 248:494],  # Subset 1: e.g., PRS only
+            df.iloc[:, 2:494]     # Subset 2: e.g., Combined
+        ]
+        
+        subset_names = ['eff', 'prs', 'eff_prs']
+        ttest_results = pd.DataFrame(columns=subset_names)
+
+        # D. 迭代不同特征集进行预测
+        for i, X_subset in enumerate(subsets):
+            print(f"Processing {cog} - Subset {subset_names[i]}...")
+            
+            y = df[cog].values
+            X = X_subset.values
+            
+            # 核心计算
+            ave_corrs = run_plsr_prediction(X, y)
+            
+            # 记录结果
+            summary_results.loc[cog, f'mean{i}'] = np.mean(ave_corrs)
+            summary_results.loc[cog, f'std{i}'] = np.std(ave_corrs)
+            ttest_results[subset_names[i]] = ave_corrs
+
+        # E. 保存中间结果 (T-test 列表)
+        ttest_output = OUTPUT_DIR / f"plsr_predict_{cog}_ttest.csv"
+        ttest_results.to_csv(ttest_output, index=False)
+
+    # F. 保存汇总结果
+    summary_output = OUTPUT_DIR / "plsr_summary_stats.csv"
+    summary_results.to_csv(summary_output)
+    print(f"\nAll tasks complete.\nSummary:\n{summary_results}")
+
+if __name__ == "__main__":
+    main()
