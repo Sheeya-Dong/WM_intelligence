@@ -8,7 +8,6 @@
 #PBS -q new
 #PBS -l nodes=1:ppn=15
 #PBS -N ldsc_munging
-#PBS -j oe
 
 # ==========================================
 # 1. 环境配置
